@@ -1,0 +1,15 @@
+512		    !NXF=NYF, resolution
+6000	    !NT, number of time step
+0.8e4	    !Re, Reynolds number 
+1.0e-3	    !dt; time step
+600 	    !nf;number of files to store
+1	        !isolver: [1]arakawa, [2] Compact, [3] CU3
+1	        !isc; [0]don't write-screen, [1]write-screen
+0	        !ifm; [0] No closure [1] DSM [2] CNN
+4	        !ipr; [1]TGV, [2]VM, [3]Shear, [4]Decay 
+16	        !NXC=NYC, coarse resolution
+0	        !ichkp; [0]t=0, [1]checkpoint
+0	        !istart; start with dns initial condition
+2	        !kappa; DSM parameter
+0.0	        !pCU3; CU3 parameter
+1024	    !DNS resolution

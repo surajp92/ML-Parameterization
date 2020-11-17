@@ -1,0 +1,11 @@
+512		!NXF=NYF; fine resolution
+64		!NX=NY; coarse resolution
+400	    !N; number of snapshots
+400		!Ntr: training snapshots
+600 	!Nte; test snapshot
+1		!f; frequency
+1		!istencil; 1: global, 
+2		!ifeatures; 1: w,s features, 2: w,s,ks features, 3: 12 features 
+1		!ilabel; 1: SGS (pi)
+0.8e4		!Re, Reynolds number 
+

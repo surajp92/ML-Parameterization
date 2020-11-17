@@ -8,7 +8,7 @@ Created on Sat Sep 26 14:16:04 2020
 
 import numpy as np
 from numpy.random import seed
-seed(1)
+seed(4)
 import pyfftw
 from scipy import integrate
 from scipy import linalg
@@ -17,8 +17,7 @@ import time as tm
 import matplotlib.ticker as ticker
 import os
 from numba import jit
-import random
-from scipy import ndimage
+import sys
 
 from keras.models import Sequential, Model, load_model
 from keras.layers import Input, Conv2D, MaxPooling2D, UpSampling2D
@@ -28,15 +27,12 @@ from scipy.ndimage import gaussian_filter
 
 #from utils import *
 
-#%%
-file = open("output_version.txt", "a", buffering=1)
-import sys
-print(sys.version, file=file)
-import keras as ke
-print(ke.__version__, file=file)
-import tensorflow as tf
-print(tf.__version__, file=file)
-file.close()
+font = {'size'   : 12}    
+plt.rc('font', **font)
+#
+#import matplotlib as mpl
+#mpl.rcParams['text.usetex'] = True
+#mpl.rcParams['text.latex.preamble'] = [r'\usepackage{amsmath}']
 
 #%%
 # fast poisson solver using second-order central difference scheme
@@ -91,6 +87,7 @@ def fps(nx, ny, dx, dy, f):
 
 #%%
 # set periodic boundary condition for ghost nodes. Index 0 and (n+2) are the ghost boundary locations
+@jit
 def bc(nx,ny,u):
     u[:,0] = u[:,ny]
     u[:,1] = u[:,ny+1]
@@ -151,7 +148,6 @@ def grad_spectral(nx,ny,u):
     return ux,uy
 
 #%%
-@jit
 def les_filter(nx,ny,nxc,nyc,u):
     
     '''
@@ -329,7 +325,7 @@ def cnn_closure(nx,ny,w,s,max_min,model,ifeat):
 # compute rhs using arakawa scheme
 # computed at all physical domain points (1:nx+1,1:ny+1; all boundary points included)
 # no ghost points
-def rhs_arakawa(nx,ny,dx,dy,re,w,s,ifm,kappa,max_min,model,ifeat):
+def rhs_arakawa(nx,ny,dx,dy,re,w,s,ifm,kappa):
     aa = 1.0/(dx*dx)
     bb = 1.0/(dy*dy)
     gg = 1.0/(4.0*dx*dy)
@@ -358,36 +354,17 @@ def rhs_arakawa(nx,ny,dx,dy,re,w,s,ifm,kappa,max_min,model,ifeat):
     
     if ifm == 0:
         f[2:nx+3,2:ny+3] = -jac + lap/re 
-#        f[:,ny+2] = f[:,2]
-#        f[nx+2,:] = f[2,:]
-#        f[nx+2,ny+2] = f[2,2] 
         
     elif ifm == 1:
         ev = dyn_smag(nx,ny,kappa,s,w)
         f[2:nx+3,2:ny+3] = -jac + lap/re + ev*lap
     
-    elif ifm == 2:
-        kconvolve = np.array([[1,1,1],[1,1,1],[1,1,1]])
-        
-        pi_source = cnn_closure(nx,ny,w,s,max_min,model,ifeat)
-        nue = pi_source/lap
-        
-        nue_p = np.where(nue > 0, nue, 0.0)
-        
-#        nue_loc_avg = ndimage.generic_filter(nue_p, np.nanmean, size=3, mode='constant', cval=np.NaN)
-#        nue_loc_avg = ndimage.generic_filter(nue_p, np.mean, size=3, mode='constant', cval=0.0)
-        nue_loc_avg = ndimage.convolve(nue_p, kconvolve, mode='mirror')#, cval=0.0)
-        nue_loc_avg = nue_loc_avg/9.0
-        
-#        mask1 = nue_p < nue_loc_avg
-#        nue_loc_avg_use = np.where(mask1[:,:] == True, nue_p, 0.0)
-        nue_loc_avg_use = np.where(nue_p < nue_loc_avg, nue_p, 0.0)
-        
-#        mask2 = nue_loc_avg_use > 0.0
-#        pi_source = np.where(mask2[:,:] == True, pi_source[:,:], 0.0)
-        pi_source = np.where(nue_loc_avg_use > 0.0, pi_source[:,:],0.0)
-        
-        f[2:nx+3,2:ny+3] = -jac + lap/re + pi_source
+#    elif ifm == 2:
+#        pi_source = cnn_closure(nx,ny,w,s,max_min,model,ifeat)
+#        nue = pi_source/lap
+#        #pi_source = gaussian_filter(pi_source, sigma=2)
+#        pi_source = np.where(nue>=0.0*np.min(nue), pi_source[:,:],0.0)
+#        f[2:nx+3,2:ny+3] = -jac + lap/re + pi_source
                         
     return f
 
@@ -512,6 +489,64 @@ def energy_spectrum(nx,ny,w):
     return en, n
 
 #%%
+def export_data(nx,ny,re,n,w,s,isolver,ifm,pCU3,ifeat):
+    if isolver == 1:
+        if ifm == 0:
+            folder = 'data_'+str(int(re)) + '_' + str(nx) + '_' + str(ny)
+        elif ifm == 1:
+            folder = 'data_'+str(int(re)) + '_' +'dsm' + '_'+ str(nx) + '_' + str(ny)
+        elif ifm == 2:
+            folder = 'data_'+str(int(re)) + '_' +'cnn' + str(ifeat)+'_'+ str(nx) + '_' + str(ny)
+    elif isolver == 2:
+        folder = 'data_'+str(int(re)) + '_' +'comp' + '_'+ str(nx) + '_' + str(ny)
+    elif isolver == 3:
+        folder = 'data_'+str(int(re)) + '_' +'cu3_' +str(pCU3) +'_'+ str(nx) + '_' + str(ny)
+        
+    if not os.path.exists('./results/'+folder):
+        os.makedirs('./results/'+folder)
+        
+    filename = './results/'+folder+'/results_' + str(int(n))+'.npz'
+    np.savez(filename,w=w)#,s=s)
+
+#%%
+def coarsen(nx,ny,nxc,nyc,u):
+    
+    '''
+    coarsen the solution field along with the size of the data 
+    
+    Inputs
+    ------
+    nx,ny : number of grid points in x and y direction on fine grid
+    nxc,nyc : number of grid points in x and y direction on coarse grid
+    u : solution field on fine grid
+    
+    Output
+    ------
+    uc : solution field on coarse grid [nxc , nyc]
+    '''
+    
+    uf = np.fft.fft2(u[0:nx,0:ny])
+    
+    ufc = np.zeros((nxc,nyc),dtype='complex')
+    
+    ufc [0:int(nxc/2),0:int(nyc/2)] = uf[0:int(nxc/2),0:int(nyc/2)]     
+    ufc [int(nxc/2):,0:int(nyc/2)] = uf[int(nx-nxc/2):,0:int(nyc/2)] 
+    ufc [0:int(nxc/2),int(nyc/2):] = uf[0:int(nxc/2),int(ny-nyc/2):] 
+    ufc [int(nxc/2):,int(nyc/2):] =  uf[int(nx-nxc/2):,int(ny-nyc/2):] 
+    
+    ufc = ufc*(nxc*nyc)/(nx*ny)
+    
+    utc = np.real(np.fft.ifft2(ufc))
+    
+    uc = np.zeros((nxc+1,nyc+1))
+    uc[0:nxc,0:nyc] = utc
+    uc[:,nyc] = uc[:,0]
+    uc[nxc,:] = uc[0,:]
+    uc[nxc,nyc] = uc[0,0]
+        
+    return uc
+    
+#%%
 def coeff_determination(y_true, y_pred):
     SS_res =  K.sum(K.square( y_true-y_pred ))
     SS_tot = K.sum(K.square( y_true - K.mean(y_true) ) )
@@ -520,40 +555,32 @@ def coeff_determination(y_true, y_pred):
     
 #%% 
 # read input file
-#l1 = []
-#with open('input.txt') as f:
-#    for l in f:
-#        l1.append((l.strip()).split("\t"))
+l1 = []
+with open('input_dns.txt') as f:
+    for l in f:
+        l1.append((l.strip()).split("\t"))
 
-with open('input.txt', 'r') as file:
-    # read a list of lines into data
-    l1 = file.readlines()  
-    
-nd = int(l1[0]) #np.int64(l1[0][0])
-nt = int(l1[1]) #np.int64(l1[1][0])
-re = float(l1[2]) #np.float64(l1[2][0])
-dt = float(l1[3]) #np.float64(l1[3][0])
-ifm = int(l1[4]) #np.int64(l1[7][0])
-npe = int(l1[5])
-lambd = float(l1[6])
-
-ns = 800 #np.int64(l1[4][0])
-isolver = 1 #np.int64(l1[5][0])
-isc = 1 #np.int64(l1[6][0])
-ipr = 4 #np.int64(l1[8][0])
-ndc = 16 #np.int64(l1[9][0])
-ichkp = 0 #np.int64(l1[10][0])
-istart = 0 #np.int64(l1[11][0])
-kappa = 2 #np.int64(l1[12][0])
-pCU3 = 0.0 #np.float64(l1[13][0])
-n_dns = 1024 #np.int64(l1[14][0])
+nd = np.int64(l1[0][0])
+nt = np.int64(l1[1][0])
+re = np.float64(l1[2][0])
+dt = np.float64(l1[3][0])
+ns = np.int64(l1[4][0])
+isolver = np.int64(l1[5][0])
+isc = np.int64(l1[6][0])
+ifm = np.int64(l1[7][0])
+ipr = np.int64(l1[8][0])
+ndc = np.int64(l1[9][0])
+ichkp = np.int64(l1[10][0])
+istart = np.int64(l1[11][0])
+kappa = np.int64(l1[12][0])
+pCU3 = np.float64(l1[13][0])
+n_dns = np.int64(l1[14][0])
 
 freq = int(nt/ns)
 
 ifeat = 2
-model = load_model('./nn_history/CNN_model_1_'+ str(8000.0) + '_' + str(512) + '_' + str(64) + '_' + str(ifeat)+'.hd5',
-                   custom_objects={'coeff_determination': coeff_determination})
-max_min = np.load('./nn_history/scaling.npy')
+#model = load_model('./nn_history/CNN_model_'+str(ifeat)+'.hd5',custom_objects={'coeff_determination': coeff_determination})
+#max_min = np.load('./nn_history/scaling.npy')
 
 
 
@@ -588,35 +615,22 @@ x, y = np.meshgrid(x, y, indexing='ij')
 
 #%% 
 # DA parameters
-#npe = 120
-
+npe = 1
 npx = 32
 npy = 32
-
-ne = (nx+1)*(ny+1)
+ne = nx*ny
 me = npx*npy
-
-mean = 0.0
-sd2 = 2.0e0 # added noise (variance)
-sd1 = np.sqrt(sd2) # added noise (standard deviation)
-
-si2 = 1.0e0
-si1 = np.sqrt(si2)
-
+sd2 = 1.0
 shift = 0.5
-
-#xp = np.arange(0,npx)
-#yp = np.arange(0,npy)
 
 xp = np.arange(0,npx)*int(nx/npx) + int(shift*nx/npx)
 yp = np.arange(0,npy)*int(ny/npy) + int(shift*ny/npy)
-
 xprobe, yprobe = np.meshgrid(xp,yp)
 
 oin = []
 for i in xp:
     for j in yp:
-        n = i*(nx+1) + j
+        n = i*nx + j
         oin.append(n)
 #        print(n)
 
@@ -624,85 +638,56 @@ roin = np.int32(np.linspace(0,npx*npy-1,npx*npy))
 dh = np.zeros((me,ne))
 dh[roin,oin] = 1.0
 
-nf = 10         # frequency of observation
-nb = int(nt/nf) # number of observation time
-oib = [nf*k for k in range(nb+1)]
-
-ns_start = 2000
-ns = int(nt/nf)
-z = np.zeros((me,ns+1))
-zf = np.zeros((me,npe,ns+1))
-DhX = np.zeros((me,npe))
-DhXm = np.zeros(me)
-
-sc = np.zeros((ne,npe))   # square-root of the covariance matrix
-cn = 1.0/np.sqrt(npe-1)
-
-data = np.load('../../w_fdns_8000.0_512_64.npz')
-wobs = data['wac_obs']
-
-oib_obs = [ns_start + nf*k for k in range(ns+1)]
-wobs = wobs[:,oib_obs]
-
-for k in range(ns+1):
-    wo = np.reshape(wobs[:,k],[nx+5,ny+5])
-    wobs_tr = np.reshape(wo[2:nx+3,2:ny+3], [ne])
-    z[:,k] = wobs_tr[oin] #+ np.random.normal(mean,sd1,[me])
-    for n in range(npe):
-        zf[:,n,k] = z[:,k] + np.random.normal(mean,sd1,me)
-    
-kobs = 1
 
 #%% 
 # allocate the vorticity and streamfunction arrays
-we = np.zeros(((nx+5)*(ny+5),npe,ns+1))
-we_temp = np.zeros(((nx+5)*(ny+5),npe,1))
-wet = np.zeros(((nx+1)*(ny+1),npe,1)) 
+we = np.empty(((nx+5)*(ny+5),npe)) 
 
-wen = np.zeros((nx+5,ny+5,npe)) 
-sen = np.zeros((nx+5,ny+5,npe))
+wen = np.empty((nx+5,ny+5,npe)) 
+sen = np.empty((nx+5,ny+5,npe))
 
-ten = np.zeros((nx+5,ny+5,npe))
-ren = np.zeros((nx+5,ny+5,npe))
-
-kstart = random.sample(range(nt), npe)
+ten = np.empty((nx+5,ny+5,npe))
+ren = np.empty((nx+5,ny+5,npe))
 
 k = 0
-w0 = np.reshape(wobs[:,k],[nx+5,ny+5]) #ic_decay(nx,ny,dx,dy)
-
 for n in range(npe):
-#    w0 = ic_decay(nx,ny,dx,dy)
-    #w0 = np.reshape(wobs[:,kstart[n]],[nx+5,ny+5])
+    w0 = ic_decay(nx,ny,dx,dy)
     
-    wen[2:nx+2,2:ny+2,n] = w0[2:nx+2,2:ny+2] + np.random.normal(mean,si1,[nx,ny])
-    wen[:,ny+2,n] = wen[:,2,n]
-    wen[nx+2,:,n] = wen[2,:,n]
-    wen[nx+2,ny+2,n] = wen[2,2,n]
-    
-    wen[:,:,n] = bc(nx,ny,wen[:,:,n])
+    wen[:,:,n] = w0
 
+#    w = np.copy(w0)
     sen[:,:,n] = fps(nx, ny, dx, dy, -wen[:,:,n])
     sen[:,:,n] = bc(nx,ny,sen[:,:,n])
     
-    we[:,n,k] = np.reshape(wen[:,:,n],[(nx+5)*(ny+5)])    
+#    we[:,:,n] = w
+#    se[:,:,n] = s
+    
+    we[:,n] = np.reshape(w0,[(nx+5)*(ny+5)])    
 
-#wa = np.zeros(((nx+5)*(ny+5),nt+1))
-wat = np.zeros(((nx+1)*(ny+1),nt+1))
+wa = np.zeros(((nx+5)*(ny+5),ns+1))
+wa[:,k] = np.sum(we[:,:],axis=1)
+wa[:,k] = wa[:,k]/npe
 
-#wa[:,k] = np.sum(we[:,:,k],axis=1)
-#wa[:,k] = wa[:,k]/npe
+nxc = 64
+nyc = 64
+wac_obs = np.zeros(((nxc+5)*(nyc+5),nt+1))
+wc_obs = np.zeros((nxc+5,nyc+5))
 
-wf = np.zeros(ne)
-Af = np.zeros((ne,npe))   # Af data
-w_ = np.zeros((nx+5,ny+5))
-
+wc_obs[2:nxc+3,2:nyc+3] = coarsen(nx,ny,nxc,nyc,wen[2:nx+3,2:ny+3,0]) # change to [2:nx+3,2:ny+3] afterwards
+wc_obs = bc(nxc,nyc,wc_obs)
+wac_obs[:,k] = np.reshape(wc_obs,[(nxc+5)*(nyc+5)])
+    
+w = np.reshape(wa[:,k], [nx+5,ny+5])
+s = fps(nx, ny, dx, dy, -w)
+s = bc(nx,ny,s)
+export_data(nx,ny,re,0,w,s,isolver,ifm,pCU3,ifeat)
 
 #%%
-file = open("output.txt", "a", buffering=1)
+file = open("output.txt", "a")
 
-def rhs(nx,ny,dx,dy,re,pCU3,w,s,ifm,isolver,max_min,model,ifeat):
+def rhs(nx,ny,dx,dy,re,pCU3,w,s,ifm,isolver):
     if isolver == 1:
-        return rhs_arakawa(nx,ny,dx,dy,re,w,s,ifm,kappa,max_min,model,ifeat)
+        return rhs_arakawa(nx,ny,dx,dy,re,w,s,ifm,kappa)
 
 
 # time integration using third-order Runge Kutta method
@@ -710,115 +695,63 @@ aa = 1.0/3.0
 bb = 2.0/3.0
 clock_time_init = tm.time()
 
-se2 = 0.0 #np.sqrt(sd2)
-se1 = np.sqrt(se2)
-#lambd = 1.25
-
 for k in range(1,nt+1):
     time = time + dt
     for n in range(npe):
-        ren[:,:,n] = rhs(nx,ny,dx,dy,re,pCU3,wen[:,:,n],sen[:,:,n],ifm,isolver,max_min,model,ifeat)
+        ren[:,:,n] = rhs(nx,ny,dx,dy,re,pCU3,wen[:,:,n],sen[:,:,n],ifm,isolver)
         
         #stage-1
         ten[2:nx+3,2:ny+3,n] = wen[2:nx+3,2:ny+3,n] + dt*ren[2:nx+3,2:ny+3,n]
-        
         ten[:,:,n] = bc(nx,ny,ten[:,:,n])
         
         sen[:,:,n] = fps(nx, ny, dx, dy, -ten[:,:,n])
         sen[:,:,n] = bc(nx,ny,sen[:,:,n])
         
-        ren[:,:,n] = rhs(nx,ny,dx,dy,re,pCU3,ten[:,:,n],sen[:,:,n],ifm,isolver,max_min,model,ifeat)
+        ren[:,:,n] = rhs(nx,ny,dx,dy,re,pCU3,ten[:,:,n],sen[:,:,n],ifm,isolver)
     
         #stage-2
         ten[2:nx+3,2:ny+3,n] = 0.75*wen[2:nx+3,2:ny+3,n] + 0.25*ten[2:nx+3,2:ny+3,n] + 0.25*dt*ren[2:nx+3,2:ny+3,n]
-        
         ten[:,:,n] = bc(nx,ny,ten[:,:,n])
         
         sen[:,:,n] = fps(nx, ny, dx, dy, -ten[:,:,n])
         sen[:,:,n] = bc(nx,ny,sen[:,:,n])
         
-        ren[:,:,n] = rhs(nx,ny,dx,dy,re,pCU3,ten[:,:,n],sen[:,:,n],ifm,isolver,max_min,model,ifeat)
+        ren[:,:,n] = rhs(nx,ny,dx,dy,re,pCU3,ten[:,:,n],sen[:,:,n],ifm,isolver)
     
         #stage-3
-        wen[2:nx+3,2:ny+3,n] = aa*wen[2:nx+3,2:ny+3,n] + bb*ten[2:nx+3,2:ny+3,n] + bb*dt*ren[2:nx+3,2:ny+3,n] + np.random.normal(mean,se1,[nx+1,ny+1]) 
-        
+        wen[2:nx+3,2:ny+3,n] = aa*wen[2:nx+3,2:ny+3,n] + bb*ten[2:nx+3,2:ny+3,n] + bb*dt*ren[2:nx+3,2:ny+3,n]
         wen[:,:,n] = bc(nx,ny,wen[:,:,n])
         
         sen[:,:,n] = fps(nx, ny, dx, dy, -wen[:,:,n])
         sen[:,:,n] = bc(nx,ny,sen[:,:,n])
         
-#        we[:,n,k] = np.reshape(wen[:,:,n],[(nx+5)*(ny+5)])
-        we_temp[:,n,0] = np.reshape(wen[:,:,n],[(nx+5)*(ny+5)])
-        wet[:,n,0] = np.reshape(wen[2:nx+3,2:ny+3,n],[(nx+1)*(ny+1)])
+        we[:,n] = np.reshape(wen[:,:,n],[(nx+5)*(ny+5)])  
     
-#    wa[:,k] = np.sum(we_temp[:,:,0],axis=1)
+#    wa[:,k] = np.sum(we[:,:],axis=1)
 #    wa[:,k] = wa[:,k]/npe
     
-    wat[:,k] = np.sum(wet[:,:,0],axis=1)
-    wat[:,k] = wat[:,k]/npe
+    wc_obs[2:nxc+3,2:nyc+3] = coarsen(nx,ny,nxc,nyc,wen[2:nx+3,2:ny+3,0]) # change to [2:nx+3,2:ny+3] afterwards
+    wc_obs = bc(nxc,nyc,wc_obs)
+    wac_obs[:,k] = np.reshape(wc_obs,[(nxc+5)*(nyc+5)])
     
-    if k == oib[kobs]:
-        print('%.2f %.2f %.2f %.2f %.2f %.2f %.2f' %(k, np.max(wat[:,k]), np.min(wat[:,k]), np.max(wet[:,:,0]), np.min(wet[:,:,0]), np.max(z[:,kobs]), np.min(z[:,kobs])))
-        print('%.2f %.2f %.2f %.2f %.2f %.2f %.2f' %(k, np.max(wat[:,k]), np.min(wat[:,k]), np.max(wet[:,:,0]), np.min(wet[:,:,0]), np.max(z[:,kobs]), np.min(z[:,kobs])), file=file)
-        # compute mean of the forecast fields
-        wf[:] = np.sum(wet[:,:,0],axis=1)   
-        wf[:] = wf[:]/npe
+    if (k%freq == 0):
+        #ws_all[int(k/freq),:,:,0] = w  
+        #ws_all[int(k/freq),:,:,1] = s
+        wa[:,int(k/freq)] = np.average(we[:,:],axis=1)
+        w = np.reshape(wa[:,int(k/freq)], [nx+5,ny+5])
+        s = fps(nx, ny, dx, dy, -w)
+        s = bc(nx,ny,s)
+        print(k, " ", time, " ", np.max(w), " ", np.min(w), file=file)
         
-        # compute square-root of the covariance matrix
-        for n in range(npe):
-            sc[:,n] = cn*(wet[:,n,0] - wf[:])
-        
-        # compute DhXm data
-        DhXm[:] = np.sum(wet[oin,:,0],axis=1)    
-        DhXm[:] = DhXm[:]/npe
-        
-        # compute DhM data
-        for n in range(npe):
-            DhX[:,n] = cn*(wet[oin,n,0] - DhXm[:])
-            
-        # R = sd2*I, observation m+atrix
-        cc = DhX @ DhX.T
-        
-        for i in range(me):
-            cc[i,i] = cc[i,i] + sd2
-        
-        ph = sc @ DhX.T
-                    
-        ci = np.linalg.pinv(cc) # ci: inverse of cc matrix
-        
-        km = ph @ ci
-        
-        # analysis update    
-        kmd = km @ (zf[:,:,kobs] - wet[oin,:,0])
-        wet[:,:,0] = wet[:,:,0] + kmd[:,:]
-        
-        wat[:,k] = np.sum(wet[:,:,0],axis=1)
-        wat[:,k] = wat[:,k]/npe
-        
-        #multiplicative inflation (optional): set lambda=1.0 for no inflation
-        wet[:,:,0] = wat[:,k].reshape(-1,1) + lambd*(wet[:,:,0] - wat[:,k].reshape(-1,1))
-        
-        for n in range(npe):
-            w_[2:nx+3,2:ny+3] = np.reshape(wet[:,n,0],[nx+1,ny+1])
-            w_ = bc(nx,ny,w_)
-            wen[:,:,n] = w_
-            we[:,n,int(k/nf)] = np.reshape(wen[:,:,n],[(nx+5)*(ny+5)])
-        
-#        wa[:,k] = np.sum(we[:,:,int(k/nf)],axis=1)
-#        wa[:,k] = wa[:,k]/npe
-        
-        kobs = kobs + 1
+        export_data(nx,ny,re,int(k/freq),w,s,isolver,ifm,pCU3,ifeat)
+
 
 total_clock_time = tm.time() - clock_time_init
-print('Total clock time=', total_clock_time,file=file)
+print('Total clock time=', total_clock_time, file=file)
 np.save('cpu_time.npy',total_clock_time)
 
-file.close()
-
-nobs = 400
-#oib_save = [10*k for k in range(nobs+1)]
-#we = we[:,:,oib_save]
-np.savez('wda_'+ str(re) + '_' + str(nx) + '_' + str(ifm) + '_' + str(npx) + '.npz', ws = we)
+#np.savez('w_dns_'+ str(re) + '_' '_'+str(npe)+ '_' + str(nx) + '_' + str(ifm) + '.npz', wa = wa)
+np.savez('w_fdns_'+ str(re) + '_' + str(nx) + '_' + str(nxc) + '.npz', wac_obs = wac_obs)
 
 #%%
 if (ipr == 4):
@@ -826,9 +759,9 @@ if (ipr == 4):
     fig, axs = plt.subplots(1,2,figsize=(12,5))
     
     for ne in range(npe):
-        w0 = np.reshape(we[:,ne,0], [nx+5,ny+5])
-        wh = np.reshape(we[:,ne,int(nobs/2)], [nx+5,ny+5])
-        wn = np.reshape(we[:,ne,-1], [nx+5,ny+5])
+        w0 = np.reshape(we[:,ne], [nx+5,ny+5])
+        wh = np.reshape(we[:,ne], [nx+5,ny+5])
+        wn = np.reshape(we[:,ne], [nx+5,ny+5])
         en0, n = energy_spectrum(nx,ny,w0)    
         enh, n = energy_spectrum(nx,ny,wh) 
         ent, n = energy_spectrum(nx,ny,wn)
@@ -836,23 +769,24 @@ if (ipr == 4):
             
         #axs[0].loglog(k,en0[1:],'r', ls = '-', lw = 2, label='$t = 0.0$')
         
-        print(np.max(ent))
-        axs[0].loglog(k,enh[1:],'k', ls = '-', lw = 2, alpha = 0.2,label='$t = '+str(0.5*dt*nt)+'$')
+        #axs[0].loglog(k,enh[1:],'g', ls = '-', lw = 2, alpha = 0.2,label='$t = '+str(0.5*dt*nt)+'$')
         #axs[0].loglog(k,ent[1:], 'b', lw = 2, alpha = 0.5, label = '$t = '+str(dt*nt)+'$')
         
-        axs[1].loglog(k,ent[1:], 'k', lw = 2, alpha = 0.2, label = '$t = '+str(dt*nt)+'$')
+        axs[1].loglog(k,ent[1:], 'b', lw = 2, alpha = 0.2, label = '$t = '+str(dt*nt)+'$')
     
-#    w0 = np.reshape(wa[:,0], [nx+5,ny+5])
-#    wh = np.reshape(wa[:,int(nt/2)], [nx+5,ny+5])
-#    wn = np.reshape(wa[:,-1], [nx+5,ny+5])
-#    en0, n = energy_spectrum(nx,ny,w0)    
-#    enh, n = energy_spectrum(nx,ny,wh) 
-#    ent, n = energy_spectrum(nx,ny,wn)
-#    k = np.linspace(1,n,n)
-#    
-#    axs[0].loglog(k,enh[1:],'r', ls = '--', lw = 2, alpha = 1.0, label='$t = '+str(0.5*dt*nt)+'$')
-#    #axs[0].loglog(k,ent[1:], 'b', ls = '--', lw = 2, alpha = 1.0, label = '$t = '+str(dt*nt)+'$')
-#    axs[1].loglog(k,ent[1:], 'r', ls = '--', lw = 2, alpha = 1.0, label = '$t = '+str(dt*nt)+'$')
+    w0 = np.reshape(wa[:,0], [nx+5,ny+5])
+    wh = np.reshape(wa[:,int(ns/2)], [nx+5,ny+5])
+    wn = np.reshape(wa[:,-1], [nx+5,ny+5])
+    en0, n = energy_spectrum(nx,ny,w0)    
+    enh, n = energy_spectrum(nx,ny,wh) 
+    ent, n = energy_spectrum(nx,ny,wn)
+    k = np.linspace(1,n,n)
+    
+    axs[0].loglog(k,enh[1:],'r', ls = '-', lw = 2, alpha = 1.0, label='$t = '+str(0.5*dt*nt)+'$')
+    axs[0].loglog(k,ent[1:], 'k', lw = 2, alpha = 1.0, label = '$t = '+str(dt*nt)+'$')
+    #axs[0].loglog(k,ent[1:], 'b', lw = 2, alpha = 0.5, label = '$t = '+str(dt*nt)+'$')
+    
+    axs[1].loglog(k,ent[1:], 'k', lw = 2, alpha = 1.0, label = '$t = '+str(dt*nt)+'$')
     
     line = 100*k**(-3.0)
     axs[0].loglog(k,line, 'k--', lw = 2, )
@@ -864,64 +798,19 @@ if (ipr == 4):
     
     axs[0].set_xlabel('$K$')
     axs[0].set_ylabel('$E(K)$')
-    #axs[0].legend(loc=3)
-    axs[0].set_ylim(1e-8,1e0)
-    axs[0].set_title('$t$ = ' + str(0.5*nt*dt))
+    axs[0].legend(loc=3)
+    axs[0].set_ylim(1e-10,1e0)
+    #axs[0].set_title('$t$ = ' + str(0.5*nt*dt))
     
     axs[1].set_xlabel('$K$')
     axs[1].set_ylabel('$E(K)$')
     #axs[0].legend(loc=3)
-    axs[1].set_ylim(1e-8,1e0)
+    axs[1].set_ylim(1e-10,1e0)
     axs[1].set_title('$t$ = ' + str(1.0*nt*dt))
     
     plt.show()
-    fig.savefig('eda_'+ str(re) + '_' + str(nx) + '_' + str(ifm) + '_' + str(npx) + '.png', 
+    fig.savefig('e_dns'+ str(re) + '_'+str(npe) + '_' + str(nx) + '_' + str(ifm) + '.png', 
                 bbox_inches = 'tight', pad_inches = 0, dpi = 300)
 
-#%%
-# store energy spectrum at all time steps
-nxc = nx
-nyc = ny
-
-oib_save = [10*k for k in range(nobs+1)]
-data = np.load('../../w_fdns_8000.0_512_64.npz')
-wfdns = data['wac_obs']
-ns_start = 2000
-ns_end = 6000
-ns_fdns = 4000
-wfdns = data['wac_obs'][:,ns_start:]
-wfdns = wfdns[:,oib_save]
-
-w0 = np.reshape(wfdns[:,0], [nxc+5,nyc+5])
-en0_fdns, nfdns = energy_spectrum(nxc,nyc,w0)    
-kfdns = np.linspace(1,nfdns,nfdns)
-
-es_comp_all_fdns = np.zeros((nfdns,nobs+1))
-for k in range(nobs+1):
-    wk = np.reshape(wfdns[:,k], [nxc+5,nyc+5])
-    enk, n = energy_spectrum(nxc,nyc,wk)
-    es_comp_all_fdns[:,k] = enk[1:]*kfdns**3
-
-es_comp_all_avg_enkf = np.zeros((nfdns,nobs+1))
-for k in range(nobs+1):
-    enk_ensembles_enkf = np.zeros((nfdns,npe))
-    for ne in range(npe):
-        wk = np.reshape(we[:,ne,k], [nxc+5,nyc+5])
-        enk, n = energy_spectrum(nxc,nyc,wk)    
-        enk_ensembles_enkf[:,ne] = enk[1:]*kfdns**3
-    es_comp_all_avg_enkf[:,k] = np.average(enk_ensembles_enkf, axis = 1)  
-
-error = []
-tstart_list = [0,100,200,300]
-kstart = 3
-for tstart in tstart_list:
-    norm_x, norm_y = es_comp_all_fdns[kstart:,tstart:].shape
-    error_enkf_all = np.linalg.norm(es_comp_all_avg_enkf[kstart:,tstart:] - es_comp_all_fdns[kstart:,tstart:])/(norm_x*norm_y)
-    error.append(error_enkf_all )
-    
-with open('error.txt', 'w') as f:
-    for item in error:
-        f.write("%s\n" % item)
-    f.close()
-
-np.savez('energy_spectrum.npz', es_comp_all_fdns = es_comp_all_fdns, es_comp_all_avg_enkf = es_comp_all_avg_enkf)
+#%%    
+file.close()
